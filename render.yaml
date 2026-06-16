@@ -1,0 +1,21 @@
+# Render.com one-click deploy — single web service
+# FastAPI serves the React frontend at the same origin (no separate static site needed)
+# Deploy: connect this repo to Render → "New Web Service" → use render.yaml
+
+services:
+  - type: web
+    name: priceiq
+    runtime: python
+    region: singapore   # closest to India for DGCA demo
+    plan: free
+    buildCommand: |
+      pip install -r backend/requirements.txt &&
+      cd frontend && npm ci && npm run build
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: CORS_ALL
+        value: "false"
+      - key: PYTHON_VERSION
+        value: "3.9.18"
+    healthCheckPath: /health
+    autoDeploy: true
