@@ -1,26 +1,49 @@
+import logging
+import os
+import sys
+from contextlib import asynccontextmanager
+from typing import Annotated, List, Optional
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Annotated, Optional, List
-import sys
-import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from data import (
-    init_db, seed_data, get_all_routes, get_route,
-    get_dgca_summary, DGCA_MARKET_PLF, DGCA_ROUTE_MONTHLY_PAX,
-    DEMAND_PARAMS_SEED, ROUTES_SEED,
+    init_db, seed_data, get_all_routes, get_route, get_dgca_summary,
+    DGCA_ROUTE_MONTHLY_PAX,
 )
 from optimizer import solve_pricing_mip, build_fare_class_params, generate_scenarios
 from calibration import run_full_calibration
 
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("priceiq")
+
+# Seat-capacity override bounds shared by /optimize and /scenarios.
+# Upper bound keeps a public, unauthenticated endpoint from feeding the CBC
+# solver arbitrarily large instances.
+CAPACITY_BOUNDS = {"ge": 50, "le": 500}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    seed_data()
+    logger.info("Database initialised and seeded")
+    yield
+
+
 app = FastAPI(
     title="PriceIQ API",
-    version="1.0.0",
-    description="Indian domestic airline dynamic pricing optimisation · OR-Tools CBC · DGCA data",
+    version="1.1.0",
+    description="Indian domestic airline dynamic pricing optimisation · OR-Tools CBC · DGCA-grounded simulation",
+    lifespan=lifespan,
 )
 
 # Allow Vite dev server + any deployed origin
@@ -38,21 +61,15 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def startup():
-    init_db()
-    seed_data()
-
-
 # ── Request / Response models ────────────────────────────────────────────────
 
 class OptimizeRequest(BaseModel):
     route_id: str
-    total_capacity: Optional[int] = None
+    total_capacity: Optional[int] = Field(default=None, **CAPACITY_BOUNDS)
     demand_multiplier: float = Field(default=1.0, ge=0.1, le=5.0)
     economy_elasticity: Optional[float] = Field(default=None, ge=0.1, le=5.0)
+    premium_elasticity: Optional[float] = Field(default=None, ge=0.1, le=5.0)
     business_elasticity: Optional[float] = Field(default=None, ge=0.1, le=5.0)
-    first_elasticity: Optional[float] = Field(default=None, ge=0.1, le=5.0)
     n_candidates: int = Field(default=50, ge=10, le=200)
 
 
@@ -79,25 +96,27 @@ class ScenarioRow(BaseModel):
     demand_multiplier: float
     status: str
     economy_price: float
+    premium_price: float
     business_price: float
-    first_price: float
     economy_demand: float
+    premium_demand: float
     business_demand: float
-    first_demand: float
     total_revenue: float
     total_expected_seats: float
     load_factor: float
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
+# Compute endpoints are deliberately sync (`def`, not `async def`): FastAPI runs
+# them in a threadpool, so a 10-second CBC solve cannot block the event loop.
 
 @app.get("/routes")
-async def list_routes():
+def list_routes():
     return get_all_routes()
 
 
 @app.post("/optimize", response_model=OptimizeResponse)
-async def optimize_pricing(req: OptimizeRequest):
+def optimize_pricing(req: OptimizeRequest):
     route = get_route(req.route_id)
     if route is None:
         raise HTTPException(status_code=404, detail=f"Route '{req.route_id}' not found")
@@ -105,12 +124,10 @@ async def optimize_pricing(req: OptimizeRequest):
     total_capacity = req.total_capacity if req.total_capacity is not None else route["total_capacity"]
 
     overrides = {}
-    if req.economy_elasticity is not None:
-        overrides["economy_elasticity"] = req.economy_elasticity
-    if req.business_elasticity is not None:
-        overrides["business_elasticity"] = req.business_elasticity
-    if req.first_elasticity is not None:
-        overrides["first_elasticity"] = req.first_elasticity
+    for fc in ("economy", "premium", "business"):
+        value = getattr(req, f"{fc}_elasticity")
+        if value is not None:
+            overrides[f"{fc}_elasticity"] = value
 
     route_with_cap = {**route, "total_capacity": total_capacity}
     fare_classes = build_fare_class_params(route_with_cap, overrides)
@@ -120,6 +137,11 @@ async def optimize_pricing(req: OptimizeRequest):
         total_capacity=total_capacity,
         demand_multiplier=req.demand_multiplier,
         n_candidates=req.n_candidates,
+    )
+    logger.info(
+        "optimize route=%s cap=%d mult=%.2f status=%s revenue=%.0f in %.1fms",
+        req.route_id, total_capacity, req.demand_multiplier,
+        result.status, result.total_revenue, result.solver_time_ms,
     )
 
     return OptimizeResponse(
@@ -142,9 +164,12 @@ async def optimize_pricing(req: OptimizeRequest):
 
 
 @app.get("/scenarios")
-async def get_scenarios(
+def get_scenarios(
     route_id: Annotated[str, Query(description="Route ID e.g. DEL-BOM")],
-    total_capacity: Annotated[Optional[int], Query(description="Override seat capacity")] = None,
+    total_capacity: Annotated[
+        Optional[int],
+        Query(description="Override seat capacity", **CAPACITY_BOUNDS),
+    ] = None,
 ):
     route = get_route(route_id)
     if route is None:
@@ -161,11 +186,11 @@ async def get_scenarios(
             demand_multiplier=s["demand_multiplier"],
             status=s.get("status", "OPTIMAL"),
             economy_price=s.get("economy_price", 0.0),
+            premium_price=s.get("premium_price", 0.0),
             business_price=s.get("business_price", 0.0),
-            first_price=s.get("first_price", 0.0),
             economy_demand=s.get("economy_demand", 0.0),
+            premium_demand=s.get("premium_demand", 0.0),
             business_demand=s.get("business_demand", 0.0),
-            first_demand=s.get("first_demand", 0.0),
             total_revenue=s.get("total_revenue", 0.0),
             total_expected_seats=s.get("total_expected_seats", 0.0),
             load_factor=s.get("load_factor", 0.0),
@@ -175,17 +200,18 @@ async def get_scenarios(
 
 
 @app.post("/calibrate")
-async def calibrate(route_id: Optional[str] = Query(default=None)):
+def calibrate(route_id: Optional[str] = Query(default=None)):
+    logger.info("calibrate route=%s", route_id or "ALL")
     return run_full_calibration(route_id)
 
 
 @app.get("/dgca")
-async def dgca_data():
+def dgca_data():
     return get_dgca_summary()
 
 
 @app.get("/metrics/{route_id}")
-async def route_metrics(route_id: str):
+def route_metrics(route_id: str):
     """
     Real airline revenue-management KPIs for a route.
     RASK  = Revenue per Available Seat Kilometre
@@ -199,23 +225,21 @@ async def route_metrics(route_id: str):
     dist_km = route["distance_km"]
     cap = route["total_capacity"]
 
-    # Run baseline optimization to get optimal revenue/demand figures
+    # Baseline optimization for optimal revenue/demand figures (cached solve)
     fare_classes = build_fare_class_params(route)
     result = solve_pricing_mip(fare_classes, cap, demand_multiplier=1.0)
 
-    total_seats_available = cap
-    total_ask = total_seats_available * dist_km          # Available Seat Km
-    total_rpk = result.total_expected_seats * dist_km   # Revenue Passenger Km
+    total_ask = cap * dist_km                            # Available Seat Km
+    total_rpk = result.total_expected_seats * dist_km    # Revenue Passenger Km
 
-    rask  = result.total_revenue / total_ask if total_ask > 0 else 0
+    rask = result.total_revenue / total_ask if total_ask > 0 else 0
     yield_ = result.total_revenue / total_rpk if total_rpk > 0 else 0
     load_factor = result.total_expected_seats / cap if cap > 0 else 0
 
-    # Per fare class breakdown
     fc_metrics = []
     for fc in result.fare_classes:
-        fc_ask  = int(cap * route[f"capacity_{fc.fare_class}_frac"]) * dist_km
-        fc_rpk  = fc.expected_demand * dist_km
+        fc_ask = int(cap * route[f"capacity_{fc.fare_class}_frac"]) * dist_km
+        fc_rpk = fc.expected_demand * dist_km
         fc_metrics.append({
             "fare_class": fc.fare_class,
             "optimal_price_inr": fc.optimal_price,
@@ -226,10 +250,10 @@ async def route_metrics(route_id: str):
         })
 
     # DGCA monthly pax trend for the route (latest 6 months available)
-    pax_trend = []
-    pax_data = DGCA_ROUTE_MONTHLY_PAX.get(route_id, {})
-    for (yr, mo), pax in sorted(pax_data.items())[-6:]:
-        pax_trend.append({"year": yr, "month": mo, "pax_both_directions": pax})
+    pax_trend = [
+        {"year": yr, "month": mo, "pax_both_directions": pax}
+        for (yr, mo), pax in sorted(DGCA_ROUTE_MONTHLY_PAX.get(route_id, {}).items())[-6:]
+    ]
 
     return {
         "route_id": route_id,
@@ -251,7 +275,7 @@ async def route_metrics(route_id: str):
 
 
 @app.get("/health")
-async def health():
+def health():
     return {"status": "ok", "service": "PriceIQ API"}
 
 

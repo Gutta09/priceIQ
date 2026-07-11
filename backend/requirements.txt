@@ -1,7 +1,5 @@
-fastapi==0.111.0
-uvicorn[standard]==0.30.0
-ortools==9.10.4067
-numpy==1.26.4
-pandas==2.0.3
-scipy==1.13.1
-pydantic==2.7.0
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+ortools==9.15.6755
+numpy==2.5.1
+pydantic==2.13.4

@@ -1,10 +1,21 @@
-from dataclasses import dataclass
-from datetime import datetime
+"""
+Demand-curve calibration: log-log OLS fit of the constant-elasticity model
+against the seeded booking history.
+
+NOTE ON SCOPE: the booking history is synthetic (generated in data.py from the
+same functional form, anchored to real DGCA PLF levels). This module is
+therefore a parameter-recovery simulation study: it demonstrates that the
+estimation pipeline recovers known elasticities from noisy observations. With
+real booking data plugged into `historical_bookings`, the identical code would
+estimate real elasticities.
+"""
+
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from typing import Optional
 import numpy as np
-import pandas as pd
 
-from data import get_all_routes, get_historical_bookings
+from data import FARE_CLASSES, get_all_routes, get_historical_bookings
 
 
 @dataclass
@@ -66,16 +77,23 @@ def calibrate_fare_class(
 
 def calibrate_route(route: dict) -> list[CalibrationResult]:
     route_id = route["route_id"]
-    df = get_historical_bookings(route_id, days=90)
+    bookings = get_historical_bookings(route_id, days=90)
     results = []
 
-    for fare_class in ["economy", "business", "first"]:
-        fc_df = df[df["fare_class"] == fare_class].copy()
+    for fare_class in FARE_CLASSES:
+        # Sold-out days (load factor 1.0) are censored: observed boardings are
+        # capped by the cabin, not by demand. Fitting on them would bias the
+        # elasticity toward zero — the classic RM "unconstraining" problem.
+        # The simple treatment used here is to discard censored observations.
+        fc_rows = [
+            b for b in bookings
+            if b["fare_class"] == fare_class and b["load_factor"] < 1.0
+        ]
         dp = route["demand_params"][fare_class]
         base_price = route[f"base_price_{fare_class}"]
 
-        prices = fc_df["price_charged"].to_numpy()
-        demands = fc_df["seats_sold"].to_numpy()
+        prices = np.array([b["price_charged"] for b in fc_rows], dtype=float)
+        demands = np.array([b["seats_sold"] for b in fc_rows], dtype=float)
 
         fitted_bd, fitted_e, r2, rmse, converged = calibrate_fare_class(
             prices, demands, base_price, dp["base_demand"], dp["elasticity"]
@@ -145,23 +163,11 @@ def run_full_calibration(route_id: Optional[str] = None) -> dict:
         "total_fare_classes": len(all_results),
         "avg_r_squared": round(float(np.mean(r2_values)), 4) if r2_values else 0.0,
         "avg_rmse": round(float(np.mean(rmse_values)), 4) if rmse_values else 0.0,
-        "results": [
-            {
-                "route_id": r.route_id,
-                "fare_class": r.fare_class,
-                "current_base_demand": r.current_base_demand,
-                "fitted_base_demand": r.fitted_base_demand,
-                "current_elasticity": r.current_elasticity,
-                "fitted_elasticity": r.fitted_elasticity,
-                "r_squared": r.r_squared,
-                "rmse": r.rmse,
-                "n_observations": r.n_observations,
-                "convergence": r.convergence,
-                "pct_change_base_demand": r.pct_change_base_demand,
-                "pct_change_elasticity": r.pct_change_elasticity,
-            }
-            for r in all_results
-        ],
+        "results": [asdict(r) for r in all_results],
         "recommendations": recommendations,
-        "calibration_timestamp": datetime.utcnow().isoformat() + "Z",
+        "data_note": (
+            "Booking history is synthetic, anchored to real DGCA monthly PLF. "
+            "This calibration is a parameter-recovery simulation study."
+        ),
+        "calibration_timestamp": datetime.now(timezone.utc).isoformat(),
     }
