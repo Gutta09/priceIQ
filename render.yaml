@@ -16,6 +16,6 @@ services:
       - key: CORS_ALL
         value: "false"
       - key: PYTHON_VERSION
-        value: "3.9.18"
+        value: "3.13.4"
     healthCheckPath: /health
     autoDeploy: true

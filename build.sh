@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# build.sh — builds frontend, copies dist into backend, then starts uvicorn
-# Usage: ./build.sh [--docker]
+# build.sh — builds the frontend, then starts FastAPI serving it at one origin.
+# Usage: ./build.sh            local build + run
+#        ./build.sh --docker   build and run via docker compose
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ "${1:-}" == "--docker" ]]; then
-  docker compose -f "$ROOT/docker-compose.yml" up --build "$@"
-  exit 0
+  shift
+  exec docker compose -f "$ROOT/docker-compose.yml" up --build "$@"
 fi
 
 echo ">>> Building React frontend…"
@@ -15,10 +16,7 @@ cd "$ROOT/frontend"
 npm ci --silent
 npm run build
 
-echo ">>> Copying dist to backend/frontend/dist…"
-mkdir -p "$ROOT/backend/frontend/dist"
-cp -r "$ROOT/frontend/dist/." "$ROOT/backend/frontend/dist/"
-
+# backend/main.py serves ../frontend/dist directly — no copy step needed.
 echo ">>> Starting FastAPI (serves React at same origin)…"
 cd "$ROOT/backend"
 pip install -q -r requirements.txt

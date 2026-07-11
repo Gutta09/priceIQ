@@ -36,3 +36,7 @@ frontend/.vite/
 .env
 .env.local
 .env.*.local
+
+# Test artifacts
+.pytest_cache/
+backend/frontend/
