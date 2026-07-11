@@ -1,4 +1,7 @@
+import { useState } from 'react'
 import { calibrate } from '../api'
+import { FC_TEXT_COLOR, FC_LABEL } from '../fareClasses'
+import Spinner from './Spinner'
 
 function R2Bar({ value }) {
   const pct = Math.round(Math.max(0, Math.min(value, 1)) * 100)
@@ -20,22 +23,19 @@ function PctChange({ value }) {
   return <span className={color}>{sign}{value.toFixed(1)}%</span>
 }
 
-const FC_COLOR = { economy: 'text-green-400', business: 'text-blue-400', first: 'text-purple-400' }
+export default function CalibrationReport({ selectedRoute }) {
+  const [report, setReport] = useState(null)
+  const [isCalibrating, setIsCalibrating] = useState(false)
+  const [error, setError] = useState(null)
 
-export default function CalibrationReport({
-  calibrationReport,
-  isCalibrating,
-  setIsCalibrating,
-  setCalibrationReport,
-  selectedRoute,
-}) {
   const runCalibration = async () => {
     setIsCalibrating(true)
+    setError(null)
     try {
       const res = await calibrate(selectedRoute?.route_id ?? null)
-      setCalibrationReport(res.data)
-    } catch (err) {
-      console.error('Calibration failed', err)
+      setReport(res.data)
+    } catch {
+      setError('Calibration failed — check that the backend is reachable.')
     } finally {
       setIsCalibrating(false)
     }
@@ -46,8 +46,8 @@ export default function CalibrationReport({
       <div className="flex items-center justify-between mb-4">
         <div>
           <div className="text-xs text-gray-400 uppercase tracking-widest">Demand Curve Calibration</div>
-          <div className="text-xs text-gray-600 mt-0.5">
-            Log-log OLS fit · training data anchored to real DGCA monthly PLF
+          <div className="text-xs text-gray-500 mt-0.5">
+            Log-log OLS on synthetic bookings anchored to real DGCA PLF — a parameter-recovery simulation study
           </div>
         </div>
         <button
@@ -57,10 +57,7 @@ export default function CalibrationReport({
         >
           {isCalibrating ? (
             <>
-              <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-              </svg>
+              <Spinner className="h-3 w-3" />
               Calibrating…
             </>
           ) : (
@@ -69,44 +66,52 @@ export default function CalibrationReport({
         </button>
       </div>
 
-      {!calibrationReport && !isCalibrating && (
-        <div className="text-center py-8 text-gray-600 text-sm border border-dashed border-gray-800 rounded-lg">
-          Fits demand elasticity parameters via log-log OLS against 90-day DGCA-calibrated booking history
+      {error && (
+        <div className="text-xs text-red-400 mb-3" role="alert">{error}</div>
+      )}
+
+      {!report && !isCalibrating && !error && (
+        <div className="text-center py-8 text-gray-500 text-sm border border-dashed border-gray-800 rounded-lg">
+          Fits demand elasticity via log-log OLS against 90 days of DGCA-anchored synthetic bookings.
+          Sold-out days are discarded as censored observations (the RM &ldquo;unconstraining&rdquo; problem).
         </div>
       )}
 
-      {calibrationReport && (
+      {report && (
         <div className="space-y-4">
           {/* Summary stats */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-gray-800 rounded-lg p-3 text-center">
               <div className="text-gray-400 text-xs">Routes</div>
-              <div className="text-white font-bold text-lg">{calibrationReport.routes_calibrated}</div>
+              <div className="text-white font-bold text-lg">{report.routes_calibrated}</div>
             </div>
             <div className="bg-gray-800 rounded-lg p-3 text-center">
               <div className="text-gray-400 text-xs">Fare Classes</div>
-              <div className="text-white font-bold text-lg">{calibrationReport.total_fare_classes}</div>
+              <div className="text-white font-bold text-lg">{report.total_fare_classes}</div>
             </div>
             <div className="bg-gray-800 rounded-lg p-3 text-center">
               <div className="text-gray-400 text-xs">Avg R²</div>
-              <div className={`font-bold text-lg ${calibrationReport.avg_r_squared >= 0.80 ? 'text-green-400' : calibrationReport.avg_r_squared >= 0.65 ? 'text-amber-400' : 'text-red-400'}`}>
-                {calibrationReport.avg_r_squared?.toFixed(3)}
+              <div className={`font-bold text-lg ${report.avg_r_squared >= 0.80 ? 'text-green-400' : report.avg_r_squared >= 0.65 ? 'text-amber-400' : 'text-red-400'}`}>
+                {report.avg_r_squared?.toFixed(3)}
               </div>
             </div>
             <div className="bg-gray-800 rounded-lg p-3 text-center">
               <div className="text-gray-400 text-xs">Avg RMSE (seats)</div>
-              <div className="text-white font-bold text-lg">{calibrationReport.avg_rmse?.toFixed(2)}</div>
+              <div className="text-white font-bold text-lg">{report.avg_rmse?.toFixed(2)}</div>
             </div>
           </div>
 
-          {/* DGCA data attribution */}
+          {/* Data provenance */}
           <div className="flex items-center gap-2 bg-orange-950/30 border border-orange-900/40 rounded-lg px-3 py-2 text-xs text-orange-300">
             <span className="w-1.5 h-1.5 rounded-full bg-orange-400 inline-block shrink-0"></span>
-            Training data sourced from DGCA monthly PLF reports (Jan–Mar 2025) via{' '}
-            <a href="https://github.com/Vonter/india-aviation-traffic" target="_blank" rel="noreferrer"
-               className="underline underline-offset-2 hover:text-orange-200">
-              Vonter/india-aviation-traffic
-            </a>
+            <span>
+              Bookings are <strong>synthetic</strong>, demand levels anchored to real DGCA monthly PLF via{' '}
+              <a href="https://github.com/Vonter/india-aviation-traffic" target="_blank" rel="noreferrer"
+                 className="underline underline-offset-2 hover:text-orange-200">
+                Vonter/india-aviation-traffic
+              </a>
+              . High R² shows the pipeline recovers known parameters — it is not evidence about real demand.
+            </span>
           </div>
 
           {/* Results table */}
@@ -126,12 +131,12 @@ export default function CalibrationReport({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800/50">
-                {calibrationReport.results.map((r) => (
+                {report.results.map((r) => (
                   <tr key={`${r.route_id}-${r.fare_class}`} className="hover:bg-gray-800/30 transition-colors">
                     <td className="py-1.5 pr-2 text-gray-300">{r.route_id}</td>
                     <td className="py-1.5 pr-4">
-                      <span className={`capitalize ${FC_COLOR[r.fare_class] ?? 'text-gray-300'}`}>
-                        {r.fare_class}
+                      <span className={FC_TEXT_COLOR[r.fare_class] ?? 'text-gray-300'}>
+                        {FC_LABEL[r.fare_class] ?? r.fare_class}
                       </span>
                     </td>
                     <td className="py-1.5 text-right text-gray-400">
@@ -152,11 +157,11 @@ export default function CalibrationReport({
           </div>
 
           {/* Recommendations */}
-          {calibrationReport.recommendations?.length > 0 && (
+          {report.recommendations?.length > 0 && (
             <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-3">
               <div className="text-xs text-gray-400 uppercase tracking-widest mb-2">Recommendations</div>
               <ul className="space-y-1">
-                {calibrationReport.recommendations.map((rec, i) => (
+                {report.recommendations.map((rec, i) => (
                   <li key={i} className="flex items-start gap-2 text-xs text-gray-300">
                     <span className="text-indigo-400 mt-0.5 shrink-0">›</span>
                     {rec}
@@ -166,8 +171,8 @@ export default function CalibrationReport({
             </div>
           )}
 
-          <div className="text-xs text-gray-600">
-            Calibrated at {new Date(calibrationReport.calibration_timestamp).toLocaleString('en-IN')}
+          <div className="text-xs text-gray-500">
+            Calibrated at {new Date(report.calibration_timestamp).toLocaleString('en-IN')}
           </div>
         </div>
       )}

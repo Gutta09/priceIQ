@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { getRoutes, optimize, getScenarios } from '../api'
+import { FARE_CLASSES } from '../fareClasses'
+import { fmtINR, fmtPrice } from '../utils/format'
 import RouteSelector from './RouteSelector'
 import OptimizationControls from './OptimizationControls'
 import RevenueCurveChart from './RevenueCurveChart'
@@ -7,13 +9,6 @@ import ScenarioTable from './ScenarioTable'
 import CalibrationReport from './CalibrationReport'
 import MetricsBar from './MetricsBar'
 import DgcaChart from './DgcaChart'
-
-function fmt(n) {
-  if (n == null) return '—'
-  if (n >= 1_00_00_000) return `₹${(n / 1_00_00_000).toFixed(2)} Cr`
-  if (n >= 1_00_000) return `₹${(n / 1_00_000).toFixed(2)} L`
-  return `₹${Math.round(n).toLocaleString('en-IN')}`
-}
 
 function StatCard({ label, value, sub, color = 'text-white' }) {
   return (
@@ -27,31 +22,28 @@ function StatCard({ label, value, sub, color = 'text-white' }) {
 
 export default function Dashboard() {
   const [routes, setRoutes] = useState([])
+  const [routesError, setRoutesError] = useState(null)
   const [selectedRoute, setSelectedRoute] = useState(null)
-  const [capacity, setCapacity] = useState(180)
+  const [capacity, setCapacity] = useState(164)
   const [demandMultiplier, setDemandMultiplier] = useState(1.0)
-  const [elasticityOverride, setElasticityOverride] = useState({ economy: null, business: null, first: null })
+  const [elasticityOverride, setElasticityOverride] = useState({ economy: null, premium: null, business: null })
   const [optimizationResult, setOptimizationResult] = useState(null)
   const [isOptimizing, setIsOptimizing] = useState(false)
   const [optError, setOptError] = useState(null)
   const [scenarios, setScenarios] = useState([])
   const [scenariosLoading, setScenariosLoading] = useState(false)
-  const [calibrationReport, setCalibrationReport] = useState(null)
-  const [isCalibrating, setIsCalibrating] = useState(false)
 
-  useEffect(() => {
-    getRoutes().then((res) => {
-      setRoutes(res.data)
-      if (res.data.length > 0) {
-        const first = res.data.find(r => r.route_id === 'DEL-BOM') ?? res.data[0]
-        setSelectedRoute(first)
-        setCapacity(first.total_capacity)
-      }
-    })
-  }, [])
+  // Aborts in-flight optimize/scenario requests when a newer one starts, so a
+  // slow response for a previously selected route can never overwrite the UI.
+  const optimizeAbort = useRef(null)
+  const scenariosAbort = useRef(null)
 
   const runOptimize = useCallback(async (route, cap, mult, overrides) => {
     if (!route) return
+    optimizeAbort.current?.abort()
+    const controller = new AbortController()
+    optimizeAbort.current = controller
+
     setIsOptimizing(true)
     setOptError(null)
     try {
@@ -59,46 +51,61 @@ export default function Dashboard() {
         route_id: route.route_id,
         total_capacity: cap,
         demand_multiplier: mult,
-        ...(overrides.economy != null ? { economy_elasticity: overrides.economy } : {}),
-        ...(overrides.business != null ? { business_elasticity: overrides.business } : {}),
-        ...(overrides.first != null ? { first_elasticity: overrides.first } : {}),
       }
-      const res = await optimize(payload)
+      for (const { key } of FARE_CLASSES) {
+        if (overrides[key] != null) payload[`${key}_elasticity`] = overrides[key]
+      }
+      const res = await optimize(payload, controller.signal)
       setOptimizationResult(res.data)
+      setIsOptimizing(false)
     } catch (err) {
+      if (controller.signal.aborted) return // superseded by a newer request
       setOptError(err?.response?.data?.detail ?? 'Optimization failed')
-    } finally {
       setIsOptimizing(false)
     }
   }, [])
 
   const loadScenarios = useCallback(async (route, cap) => {
     if (!route) return
+    scenariosAbort.current?.abort()
+    const controller = new AbortController()
+    scenariosAbort.current = controller
+
     setScenariosLoading(true)
     try {
-      const res = await getScenarios(route.route_id, cap)
+      const res = await getScenarios(route.route_id, cap, controller.signal)
       setScenarios(res.data)
-    } catch (_) {
+      setScenariosLoading(false)
+    } catch {
+      if (controller.signal.aborted) return
       setScenarios([])
-    } finally {
       setScenariosLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    if (selectedRoute) {
-      runOptimize(selectedRoute, capacity, demandMultiplier, elasticityOverride)
-      loadScenarios(selectedRoute, capacity)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRoute])
+    getRoutes()
+      .then((res) => {
+        setRoutes(res.data)
+        if (res.data.length > 0) {
+          const first = res.data.find(r => r.route_id === 'DEL-BOM') ?? res.data[0]
+          setSelectedRoute(first)
+          setCapacity(first.total_capacity)
+          // Kick off the first optimization with the default controls
+          runOptimize(first, first.total_capacity, 1.0, { economy: null, premium: null, business: null })
+          loadScenarios(first, first.total_capacity)
+        }
+      })
+      .catch(() => setRoutesError('Could not reach the PriceIQ API. Is the backend running?'))
+  }, [runOptimize, loadScenarios])
 
   const handleRouteChange = (route) => {
     setSelectedRoute(route)
     setCapacity(route.total_capacity)
     setOptimizationResult(null)
     setScenarios([])
-    setCalibrationReport(null)
+    runOptimize(route, route.total_capacity, demandMultiplier, elasticityOverride)
+    loadScenarios(route, route.total_capacity)
   }
 
   const handleOptimize = () => {
@@ -106,9 +113,7 @@ export default function Dashboard() {
     loadScenarios(selectedRoute, capacity)
   }
 
-  const econResult  = optimizationResult?.fare_classes?.find((fc) => fc.fare_class === 'economy')
-  const bizResult   = optimizationResult?.fare_classes?.find((fc) => fc.fare_class === 'business')
-  const firstResult = optimizationResult?.fare_classes?.find((fc) => fc.fare_class === 'first')
+  const fcResult = (key) => optimizationResult?.fare_classes?.find((fc) => fc.fare_class === key)
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100">
@@ -133,11 +138,17 @@ export default function Dashboard() {
             <span className="w-1.5 h-1.5 rounded-full bg-orange-400 inline-block"></span>
             DGCA Data
           </a>
-          <div className="text-xs text-gray-600">FastAPI · SQLite</div>
+          <div className="text-xs text-gray-500">FastAPI · SQLite</div>
         </div>
       </header>
 
       <div className="p-6 space-y-6">
+        {routesError && (
+          <div className="bg-red-900/40 border border-red-700 rounded-xl px-4 py-3 text-red-300 text-sm" role="alert">
+            {routesError}
+          </div>
+        )}
+
         {/* Top row: controls */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <RouteSelector
@@ -161,7 +172,7 @@ export default function Dashboard() {
         </div>
 
         {optError && (
-          <div className="bg-red-900/40 border border-red-700 rounded-xl px-4 py-3 text-red-300 text-sm">
+          <div className="bg-red-900/40 border border-red-700 rounded-xl px-4 py-3 text-red-300 text-sm" role="alert">
             {optError}
           </div>
         )}
@@ -171,28 +182,22 @@ export default function Dashboard() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <StatCard
               label="Total Revenue"
-              value={fmt(optimizationResult.total_revenue)}
+              value={fmtINR(optimizationResult.total_revenue, { dash: true })}
               sub={`${optimizationResult.status} · ${optimizationResult.solver_time_ms.toFixed(1)}ms`}
               color="text-green-400"
             />
-            <StatCard
-              label="Economy Price"
-              value={econResult ? `₹${Math.round(econResult.optimal_price).toLocaleString('en-IN')}` : '—'}
-              sub={econResult ? `${econResult.expected_demand.toFixed(1)} seats · ${fmt(econResult.expected_revenue)}` : ''}
-              color="text-emerald-400"
-            />
-            <StatCard
-              label="Business Price"
-              value={bizResult ? `₹${Math.round(bizResult.optimal_price).toLocaleString('en-IN')}` : '—'}
-              sub={bizResult ? `${bizResult.expected_demand.toFixed(1)} seats · ${fmt(bizResult.expected_revenue)}` : ''}
-              color="text-blue-400"
-            />
-            <StatCard
-              label="First / Flex Price"
-              value={firstResult ? `₹${Math.round(firstResult.optimal_price).toLocaleString('en-IN')}` : '—'}
-              sub={firstResult ? `${firstResult.expected_demand.toFixed(1)} seats · ${fmt(firstResult.expected_revenue)}` : ''}
-              color="text-purple-400"
-            />
+            {FARE_CLASSES.map(({ key, label, text }) => {
+              const r = fcResult(key)
+              return (
+                <StatCard
+                  key={key}
+                  label={`${label} Price`}
+                  value={r ? fmtPrice(r.optimal_price) : '—'}
+                  sub={r ? `${r.expected_demand.toFixed(1)} seats · ${fmtINR(r.expected_revenue)}` : ''}
+                  color={text}
+                />
+              )
+            })}
           </div>
         )}
 
@@ -219,24 +224,21 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Calibration */}
+        {/* Calibration — keyed by route so switching routes resets the report */}
         <CalibrationReport
-          calibrationReport={calibrationReport}
-          isCalibrating={isCalibrating}
-          setIsCalibrating={setIsCalibrating}
-          setCalibrationReport={setCalibrationReport}
+          key={selectedRoute?.route_id ?? 'none'}
           selectedRoute={selectedRoute}
         />
 
-        {/* DGCA attribution footer */}
-        <div className="border-t border-gray-800 pt-4 flex flex-wrap gap-4 items-center justify-between text-xs text-gray-600">
+        {/* Data provenance footer */}
+        <div className="border-t border-gray-800 pt-4 flex flex-wrap gap-4 items-center justify-between text-xs text-gray-500">
           <div>
-            Demand data: DGCA Scheduled Domestic Monthly Reports (2024–25) ·
-            PLF series via{' '}
+            PLF &amp; passenger data: real DGCA monthly reports (via{' '}
             <a href="https://github.com/Vonter/india-aviation-traffic" target="_blank" rel="noreferrer"
-               className="text-gray-500 hover:text-gray-300 underline underline-offset-2">
+               className="hover:text-gray-300 underline underline-offset-2">
               Vonter/india-aviation-traffic
             </a>
+            ) · booking history: synthetic, DGCA-anchored simulation
           </div>
           <div>Optimization: OR-Tools CBC MIP · 50 price candidates × 3 fare classes</div>
         </div>

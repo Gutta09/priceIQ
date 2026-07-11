@@ -10,13 +10,11 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts'
+import { FARE_CLASSES } from '../fareClasses'
+import { fmtINRShort } from '../utils/format'
 
-const FARE_TABS = [
-  { key: 'economy',  label: 'Economy',  revColor: '#6ee7b7' },
-  { key: 'business', label: 'Business', revColor: '#93c5fd' },
-  { key: 'first',    label: 'First/Flex', revColor: '#d8b4fe' },
-]
-
+// NOTE: this mirrors the backend's constant-elasticity model
+// (optimizer.compute_demand) for instant client-side curve rendering.
 function generateCurve(basePrice, baseDemand, elasticity, minPrice, maxPrice, nPoints = 120) {
   const data = []
   for (let i = 0; i < nPoints; i++) {
@@ -26,12 +24,6 @@ function generateCurve(basePrice, baseDemand, elasticity, minPrice, maxPrice, nP
     data.push({ price: Math.round(price), demand: Math.round(demand * 10) / 10, revenue: Math.round(revenue) })
   }
   return data
-}
-
-function fmtINR(n) {
-  if (n >= 1_00_00_000) return `₹${(n / 1_00_00_000).toFixed(1)}Cr`
-  if (n >= 1_00_000) return `₹${(n / 1_00_000).toFixed(1)}L`
-  return `₹${Math.round(n).toLocaleString('en-IN')}`
 }
 
 const CustomTooltip = ({ active, payload, label }) => {
@@ -45,7 +37,7 @@ const CustomTooltip = ({ active, payload, label }) => {
         <div key={entry.dataKey} style={{ color: entry.color }}>
           {entry.name}:{' '}
           <span className="font-bold">
-            {entry.dataKey === 'revenue' ? fmtINR(entry.value) : `${entry.value} seats`}
+            {entry.dataKey === 'revenue' ? fmtINRShort(entry.value) : `${entry.value} seats`}
           </span>
         </div>
       ))}
@@ -55,24 +47,22 @@ const CustomTooltip = ({ active, payload, label }) => {
 
 export default function RevenueCurveChart({ optimizationResult, selectedRoute }) {
   const [activeTab, setActiveTab] = useState('economy')
-  const tab = FARE_TABS.find((t) => t.key === activeTab)
+  const tab = FARE_CLASSES.find((t) => t.key === activeTab)
 
   const { curveData, optimalPrice } = useMemo(() => {
-    if (!selectedRoute?.demand_params) return { curveData: [], optimalPrice: null }
+    if (!selectedRoute?.demand_params?.[activeTab]) return { curveData: [], optimalPrice: null }
     const dp = selectedRoute.demand_params[activeTab]
-    const basePrice  = selectedRoute[`base_price_${activeTab}`]
-    const floorMult  = selectedRoute.price_floor_mult ?? 0.50
-    const ceilMult   = selectedRoute.price_ceil_mult  ?? 3.00
-    const mn = basePrice * floorMult
-    const mx = basePrice * ceilMult
-    const data = generateCurve(basePrice, dp.base_demand, dp.elasticity, mn, mx)
+    const basePrice = selectedRoute[`base_price_${activeTab}`]
+    const floorMult = selectedRoute.price_floor_mult ?? 0.50
+    const ceilMult = selectedRoute.price_ceil_mult ?? 3.00
+    const data = generateCurve(basePrice, dp.base_demand, dp.elasticity, basePrice * floorMult, basePrice * ceilMult)
     const fcResult = optimizationResult?.fare_classes?.find((fc) => fc.fare_class === activeTab)
     return { curveData: data, optimalPrice: fcResult?.optimal_price ?? null }
   }, [selectedRoute, activeTab, optimizationResult])
 
   if (!selectedRoute) {
     return (
-      <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 h-80 flex items-center justify-center text-gray-600 text-sm">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 h-80 flex items-center justify-center text-gray-500 text-sm">
         Select a route to view revenue curves
       </div>
     )
@@ -82,10 +72,12 @@ export default function RevenueCurveChart({ optimizationResult, selectedRoute })
     <div className="bg-gray-900 border border-gray-700 rounded-xl p-4">
       <div className="flex items-center justify-between mb-4">
         <div className="text-xs text-gray-400 uppercase tracking-widest">Revenue vs Price Curve</div>
-        <div className="flex gap-1">
-          {FARE_TABS.map((t) => (
+        <div className="flex gap-1" role="tablist" aria-label="Fare class">
+          {FARE_CLASSES.map((t) => (
             <button
               key={t.key}
+              role="tab"
+              aria-selected={activeTab === t.key}
               onClick={() => setActiveTab(t.key)}
               className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                 activeTab === t.key
@@ -105,7 +97,7 @@ export default function RevenueCurveChart({ optimizationResult, selectedRoute })
           <XAxis
             dataKey="price"
             tick={{ fill: '#9ca3af', fontSize: 10 }}
-            tickFormatter={(v) => `₹${v >= 1000 ? `${(v/1000).toFixed(0)}k` : v}`}
+            tickFormatter={(v) => `₹${v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v}`}
             tickCount={6}
           />
           <YAxis
@@ -113,8 +105,8 @@ export default function RevenueCurveChart({ optimizationResult, selectedRoute })
             orientation="left"
             tick={{ fill: '#9ca3af', fontSize: 10 }}
             tickFormatter={(v) => {
-              if (v >= 1_00_000) return `₹${(v/1_00_000).toFixed(0)}L`
-              if (v >= 1000) return `₹${(v/1000).toFixed(0)}k`
+              if (v >= 1_00_000) return `₹${(v / 1_00_000).toFixed(0)}L`
+              if (v >= 1000) return `₹${(v / 1000).toFixed(0)}k`
               return `₹${v}`
             }}
             width={55}
@@ -132,7 +124,7 @@ export default function RevenueCurveChart({ optimizationResult, selectedRoute })
             yAxisId="revenue"
             type="monotone"
             dataKey="revenue"
-            stroke={tab.revColor}
+            stroke={tab.chart}
             strokeWidth={2.5}
             dot={false}
             name="Revenue (₹)"
@@ -165,7 +157,7 @@ export default function RevenueCurveChart({ optimizationResult, selectedRoute })
         </ComposedChart>
       </ResponsiveContainer>
 
-      {optimalPrice && (
+      {optimalPrice != null && (
         <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
           <span className="w-4 border-t-2 border-green-500 border-dashed inline-block"></span>
           Optimal price from OR-Tools CBC MIP solver

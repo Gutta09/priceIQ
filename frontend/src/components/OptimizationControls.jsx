@@ -1,11 +1,17 @@
+import { useId } from 'react'
+import { FARE_CLASSES } from '../fareClasses'
+import Spinner from './Spinner'
+
 function Slider({ label, value, min, max, step, onChange, format }) {
+  const id = useId()
   return (
     <div>
       <div className="flex justify-between text-xs mb-1">
-        <span className="text-gray-400">{label}</span>
+        <label htmlFor={id} className="text-gray-400">{label}</label>
         <span className="text-indigo-400 font-bold">{format ? format(value) : value}</span>
       </div>
       <input
+        id={id}
         type="range"
         min={min}
         max={max}
@@ -14,7 +20,7 @@ function Slider({ label, value, min, max, step, onChange, format }) {
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-full h-2 rounded-lg appearance-none bg-gray-700 cursor-pointer"
       />
-      <div className="flex justify-between text-xs text-gray-600 mt-1">
+      <div className="flex justify-between text-xs text-gray-500 mt-1">
         <span>{format ? format(min) : min}</span>
         <span>{format ? format(max) : max}</span>
       </div>
@@ -23,10 +29,12 @@ function Slider({ label, value, min, max, step, onChange, format }) {
 }
 
 function ElasticityInput({ label, value, onChange }) {
+  const id = useId()
   return (
     <div>
-      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+      <label htmlFor={id} className="block text-xs text-gray-400 mb-1">{label}</label>
       <input
+        id={id}
         type="number"
         min="0.1"
         max="5.0"
@@ -34,7 +42,7 @@ function ElasticityInput({ label, value, onChange }) {
         value={value ?? ''}
         placeholder="auto"
         onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
-        className="w-full bg-gray-800 border border-gray-700 text-gray-100 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-600"
+        className="w-full bg-gray-800 border border-gray-700 text-gray-100 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 placeholder-gray-500"
       />
     </div>
   )
@@ -78,23 +86,21 @@ export default function OptimizationControls({
       />
 
       <div>
-        <div className="text-xs text-gray-400 mb-2">Elasticity Overrides</div>
+        <div className="text-xs text-gray-400 mb-2">
+          Elasticity Overrides
+          <span className="text-gray-500 normal-case">
+            {' '}— how sharply demand falls as price rises (higher = more price-sensitive)
+          </span>
+        </div>
         <div className="grid grid-cols-3 gap-2">
-          <ElasticityInput
-            label="Economy"
-            value={elasticityOverride.economy}
-            onChange={(v) => setElasticityOverride((p) => ({ ...p, economy: v }))}
-          />
-          <ElasticityInput
-            label="Business"
-            value={elasticityOverride.business}
-            onChange={(v) => setElasticityOverride((p) => ({ ...p, business: v }))}
-          />
-          <ElasticityInput
-            label="First"
-            value={elasticityOverride.first}
-            onChange={(v) => setElasticityOverride((p) => ({ ...p, first: v }))}
-          />
+          {FARE_CLASSES.map(({ key, label }) => (
+            <ElasticityInput
+              key={key}
+              label={label}
+              value={elasticityOverride[key]}
+              onChange={(v) => setElasticityOverride((p) => ({ ...p, [key]: v }))}
+            />
+          ))}
         </div>
       </div>
 
@@ -105,10 +111,7 @@ export default function OptimizationControls({
       >
         {isOptimizing ? (
           <>
-            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-            </svg>
+            <Spinner />
             Solving MIP…
           </>
         ) : (

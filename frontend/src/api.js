@@ -11,16 +11,17 @@ const api = axios.create({
 
 export const getRoutes = () => api.get('/routes')
 
-export const optimize = (payload) => api.post('/optimize', payload)
+export const optimize = (payload, signal) => api.post('/optimize', payload, { signal })
 
-export const calibrate = (routeId) =>
-  api.post('/calibrate', null, { params: routeId ? { route_id: routeId } : {} })
+export const calibrate = (routeId, signal) =>
+  api.post('/calibrate', null, { params: routeId ? { route_id: routeId } : {}, signal })
 
-export const getScenarios = (routeId, capacity) =>
+export const getScenarios = (routeId, capacity, signal) =>
   api.get('/scenarios', {
     params: { route_id: routeId, ...(capacity != null ? { total_capacity: capacity } : {}) },
+    signal,
   })
 
-export const getDgca = () => api.get('/dgca')
+export const getDgca = (signal) => api.get('/dgca', { signal })
 
-export const getMetrics = (routeId) => api.get(`/metrics/${routeId}`)
+export const getMetrics = (routeId, signal) => api.get(`/metrics/${routeId}`, { signal })

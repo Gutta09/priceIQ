@@ -20,11 +20,23 @@ const CustomTooltip = ({ active, payload, label }) => {
 
 export default function DgcaChart({ selectedRoute }) {
   const [dgcaData, setDgcaData] = useState(null)
+  const [error, setError] = useState(false)
 
   useEffect(() => {
-    getDgca().then(res => setDgcaData(res.data)).catch(() => {})
+    const controller = new AbortController()
+    getDgca(controller.signal)
+      .then(res => setDgcaData(res.data))
+      .catch(() => { if (!controller.signal.aborted) setError(true) })
+    return () => controller.abort()
   }, [])
 
+  if (error) {
+    return (
+      <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 text-xs text-red-400" role="alert">
+        Could not load the DGCA PLF series.
+      </div>
+    )
+  }
   if (!dgcaData) return null
 
   const series = dgcaData.market_plf_series.map(d => ({

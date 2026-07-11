@@ -1,19 +1,13 @@
+import { FARE_CLASSES } from '../fareClasses'
+import { fmtINRShort, fmtPrice } from '../utils/format'
+import Spinner from './Spinner'
+
 const SCENARIO_STYLES = {
   off_peak: { badge: 'bg-gray-700 text-gray-300', row: '' },
   low:      { badge: 'bg-blue-900/50 text-blue-300', row: '' },
   medium:   { badge: 'bg-green-900/50 text-green-300', row: 'font-bold' },
   high:     { badge: 'bg-amber-900/50 text-amber-300', row: '' },
   peak:     { badge: 'bg-red-900/50 text-red-300', row: '' },
-}
-
-function fmtINR(n) {
-  if (n >= 1_00_00_000) return `₹${(n / 1_00_00_000).toFixed(2)}Cr`
-  if (n >= 1_00_000) return `₹${(n / 1_00_000).toFixed(1)}L`
-  return `₹${Math.round(n).toLocaleString('en-IN')}`
-}
-
-function fmtPrice(n) {
-  return `₹${Math.round(n).toLocaleString('en-IN')}`
 }
 
 function LoadBar({ value }) {
@@ -35,15 +29,12 @@ export default function ScenarioTable({ scenarios, loading, capacity }) {
       <div className="text-xs text-gray-400 uppercase tracking-widest mb-3">Demand Scenarios</div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-48 text-gray-600 text-sm">
-          <svg className="animate-spin h-5 w-5 mr-2 text-indigo-500" viewBox="0 0 24 24" fill="none">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-          </svg>
+        <div className="flex items-center justify-center h-48 text-gray-500 text-sm">
+          <Spinner className="h-5 w-5 mr-2 text-indigo-500" />
           Computing scenarios…
         </div>
       ) : scenarios.length === 0 ? (
-        <div className="flex items-center justify-center h-48 text-gray-600 text-sm">
+        <div className="flex items-center justify-center h-48 text-gray-500 text-sm">
           Select a route to view scenarios
         </div>
       ) : (
@@ -52,9 +43,9 @@ export default function ScenarioTable({ scenarios, loading, capacity }) {
             <thead>
               <tr className="text-gray-500 border-b border-gray-800">
                 <th className="text-left pb-2 font-normal">Scenario</th>
-                <th className="text-right pb-2 font-normal">Eco</th>
-                <th className="text-right pb-2 font-normal">Biz</th>
-                <th className="text-right pb-2 font-normal">Flex</th>
+                {FARE_CLASSES.map(({ key, shortLabel }) => (
+                  <th key={key} className="text-right pb-2 font-normal">{shortLabel}</th>
+                ))}
                 <th className="text-right pb-2 font-normal">Revenue</th>
                 <th className="pb-2 font-normal pl-3">Load</th>
               </tr>
@@ -69,10 +60,12 @@ export default function ScenarioTable({ scenarios, loading, capacity }) {
                         {s.label}
                       </span>
                     </td>
-                    <td className="py-2 text-right text-green-400">{fmtPrice(s.economy_price)}</td>
-                    <td className="py-2 text-right text-blue-400">{fmtPrice(s.business_price)}</td>
-                    <td className="py-2 text-right text-purple-400">{fmtPrice(s.first_price)}</td>
-                    <td className="py-2 text-right text-gray-200">{fmtINR(s.total_revenue)}</td>
+                    {FARE_CLASSES.map(({ key, text }) => (
+                      <td key={key} className={`py-2 text-right ${text}`}>
+                        {fmtPrice(s[`${key}_price`])}
+                      </td>
+                    ))}
+                    <td className="py-2 text-right text-gray-200">{fmtINRShort(s.total_revenue)}</td>
                     <td className="py-2 pl-3 w-28">
                       <LoadBar value={s.load_factor} />
                     </td>
@@ -90,7 +83,7 @@ export default function ScenarioTable({ scenarios, loading, capacity }) {
           <div className="text-right">
             Peak rev:{' '}
             <span className="text-green-400">
-              {fmtINR(scenarios.find((s) => s.scenario === 'peak')?.total_revenue ?? 0)}
+              {fmtINRShort(scenarios.find((s) => s.scenario === 'peak')?.total_revenue ?? 0)}
             </span>
           </div>
         </div>
